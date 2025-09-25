@@ -7,12 +7,18 @@ import json
 from typing import List, Dict, Optional
 from aiohttp import web
 import time
+import sys
+
+# حل مشکل کدگذاری
+os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # تنظیم لاگ
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
+
 logger = logging.getLogger(__name__)
 
 # تنظیمات بات
@@ -38,13 +44,13 @@ class ProfessionalCryptoMonitor:
             timeout=timeout,
             headers={'User-Agent': 'CryptoPumpMonitor/1.0'}
         )
-        logger.info("🚀 HTTP Session initialized")
+        logger.info("HTTP Session initialized")
     
     async def close_session(self):
         """بستن session"""
         if self.session and not self.session.closed:
             await self.session.close()
-            logger.info("❌ Session closed")
+            logger.info("Session closed")
     
     async def get_all_usdt_symbols(self) -> List[str]:
         """دریافت همه سیمبل‌های USDT از بایننس"""
@@ -65,14 +71,14 @@ class ProfessionalCryptoMonitor:
                             symbol_info['quoteAsset'] == 'USDT'):
                             symbols.append(symbol)
                     
-                    logger.info(f"✅ پیدا شد: {len(symbols)} جفت ارز USDT فعال")
+                    logger.info(f"Found: {len(symbols)} active USDT pairs")
                     return symbols
                 else:
-                    logger.error(f"❌ خطا در دریافت symbols: {response.status}")
+                    logger.error(f"Error getting symbols: {response.status}")
                     return []
                     
         except Exception as e:
-            logger.error(f"❌ خطا در get_all_usdt_symbols: {e}")
+            logger.error(f"Error in get_all_usdt_symbols: {e}")
             return []
     
     async def get_kline_data(self, symbol: str) -> Optional[Dict]:
@@ -125,14 +131,14 @@ class ProfessionalCryptoMonitor:
                             'timestamp': int(current_kline[0])
                         }
                 elif response.status == 429:  # Rate limit
-                    logger.warning(f"⚠️ Rate limit برای {symbol}")
+                    logger.warning(f"Rate limit for {symbol}")
                     await asyncio.sleep(1)
                     return None
                 else:
                     return None
                     
         except Exception as e:
-            logger.error(f"❌ خطا در دریافت کندل {symbol}: {e}")
+            logger.error(f"Error getting kline {symbol}: {e}")
             return None
     
     async def get_24h_change_data(self, symbols: List[str]) -> List[Dict]:
@@ -147,13 +153,13 @@ class ProfessionalCryptoMonitor:
                         item for item in data 
                         if item['symbol'] in symbols
                     ]
-                    logger.info(f"✅ دریافت تغییرات 24 ساعته برای {len(usdt_data)} جفت ارز")
+                    logger.info(f"Got 24h data for {len(usdt_data)} pairs")
                     return usdt_data
                 else:
-                    logger.error(f"❌ خطا در دریافت 24h data: {response.status}")
+                    logger.error(f"Error getting 24h data: {response.status}")
                     return []
         except Exception as e:
-            logger.error(f"❌ خطا در get_24h_change_data: {e}")
+            logger.error(f"Error in get_24h_change_data: {e}")
             return []
     
     async def get_30min_movers(self, symbols: List[str]) -> List[Dict]:
@@ -203,19 +209,19 @@ class ProfessionalCryptoMonitor:
             # مرتب‌سازی بر اساس تغییرات
             movers.sort(key=lambda x: abs(x['change_30m']), reverse=True)
             
-            logger.info(f"✅ پیدا شد: {len(movers)} ارز با 20%+ تغییر در 30 دقیقه")
+            logger.info(f"Found: {len(movers)} coins with 20%+ change in 30min")
             return movers[:10]  # فقط 10 تای اول
             
         except Exception as e:
-            logger.error(f"❌ خطا در get_30min_movers: {e}")
+            logger.error(f"Error in get_30min_movers: {e}")
             return []
     
     async def send_telegram(self, message: str) -> bool:
         """ارسال پیام تلگرام"""
         try:
             if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or CHAT_ID == 'YOUR_CHAT_ID_HERE':
-                logger.warning("⚠️ BOT_TOKEN یا CHAT_ID تنظیم نشده!")
-                logger.info(f"📝 TEST MESSAGE: {message[:100]}...")
+                logger.warning("BOT_TOKEN or CHAT_ID not set!")
+                logger.info(f"TEST MESSAGE: {message[:100]}...")
                 return False
                 
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -231,11 +237,11 @@ class ProfessionalCryptoMonitor:
                     return True
                 else:
                     error_text = await response.text()
-                    logger.error(f"❌ خطا در ارسال تلگرام: {response.status} - {error_text}")
+                    logger.error(f"Telegram error: {response.status} - {error_text}")
                     return False
                     
         except Exception as e:
-            logger.error(f"❌ خطا در send_telegram: {e}")
+            logger.error(f"Error in send_telegram: {e}")
             return False
     
     def format_number(self, num: float) -> str:
@@ -251,13 +257,13 @@ class ProfessionalCryptoMonitor:
                     'SOLUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT', 'LTCUSDT']
         
         if symbol in top_coins[:3]:
-            return "👑"  # TOP 3
+            return "TOP3"  # TOP 3
         elif symbol in top_coins[:10]:
-            return "🥇"  # TOP 10
+            return "TOP10"  # TOP 10
         elif symbol in top_coins:
-            return "🏆"  # TOP coins
+            return "MAJOR"  # TOP coins
         else:
-            return "🚀"  # Other coins
+            return "ALT"  # Other coins
     
     async def check_instant_moves(self, symbols: List[str]) -> tuple:
         """بررسی حرکات فوری (4%+ در یک کندل)"""
@@ -299,7 +305,7 @@ class ProfessionalCryptoMonitor:
                     await asyncio.sleep(0.2)
                     
             except Exception as e:
-                logger.error(f"❌ خطا در پردازش batch: {e}")
+                logger.error(f"Error processing batch: {e}")
         
         return pumps_found, dumps_found
     
@@ -311,28 +317,28 @@ class ProfessionalCryptoMonitor:
         volume = data['volume']
         current_price = data['close']
         
-        emoji = self.get_market_cap_rank_emoji(symbol)
+        rank = self.get_market_cap_rank_emoji(symbol)
         coin_name = symbol.replace('USDT', '')
         
         message = f"""
-{emoji} <b>🚨 INSTANT PUMP!</b>
+<b>INSTANT PUMP ALERT!</b>
 
-💰 <b>Coin:</b> #{coin_name}
-📊 <b>Symbol:</b> {symbol}
-🕯️ <b>1m Candle:</b> +{candle_change:.2f}%
-📈 <b>Total Change:</b> {total_change:+.2f}%
-💵 <b>Price:</b> ${self.format_number(current_price)}
-📊 <b>Volume:</b> {volume:,.0f}
-🕐 <b>Time:</b> {datetime.now().strftime("%H:%M:%S")}
+<b>Coin:</b> #{coin_name} ({rank})
+<b>Symbol:</b> {symbol}
+<b>1m Candle:</b> +{candle_change:.2f}%
+<b>Total Change:</b> {total_change:+.2f}%
+<b>Price:</b> ${self.format_number(current_price)}
+<b>Volume:</b> {volume:,.0f}
+<b>Time:</b> {datetime.now().strftime("%H:%M:%S")}
 
-<b>⚡ کندل 1 دقیقه‌ای بالای 4% حرکت!</b>
+<b>1-minute candle moved above 4%!</b>
 
 #pump #instant #{coin_name.lower()}
         """
         
         success = await self.send_telegram(message)
         if success:
-            logger.info(f"🚀 پامپ فوری ارسال شد: {symbol} +{candle_change:.2f}%")
+            logger.info(f"Instant pump sent: {symbol} +{candle_change:.2f}%")
     
     async def send_dump_alert(self, data: Dict):
         """ارسال هشدار دامپ فوری"""
@@ -342,28 +348,28 @@ class ProfessionalCryptoMonitor:
         volume = data['volume']
         current_price = data['close']
         
-        emoji = self.get_market_cap_rank_emoji(symbol)
+        rank = self.get_market_cap_rank_emoji(symbol)
         coin_name = symbol.replace('USDT', '')
         
         message = f"""
-📉 <b>🚨 INSTANT DUMP!</b>
+<b>INSTANT DUMP ALERT!</b>
 
-💰 <b>Coin:</b> #{coin_name}
-📊 <b>Symbol:</b> {symbol}
-🕯️ <b>1m Candle:</b> {candle_change:.2f}%
-📉 <b>Total Change:</b> {total_change:+.2f}%
-💵 <b>Price:</b> ${self.format_number(current_price)}
-📊 <b>Volume:</b> {volume:,.0f}
-🕐 <b>Time:</b> {datetime.now().strftime("%H:%M:%S")}
+<b>Coin:</b> #{coin_name} ({rank})
+<b>Symbol:</b> {symbol}
+<b>1m Candle:</b> {candle_change:.2f}%
+<b>Total Change:</b> {total_change:+.2f}%
+<b>Price:</b> ${self.format_number(current_price)}
+<b>Volume:</b> {volume:,.0f}
+<b>Time:</b> {datetime.now().strftime("%H:%M:%S")}
 
-<b>⚡ کندل 1 دقیقه‌ای زیر -4% حرکت!</b>
+<b>1-minute candle moved below -4%!</b>
 
 #dump #instant #{coin_name.lower()}
         """
         
         success = await self.send_telegram(message)
         if success:
-            logger.info(f"📉 دامپ فوری ارسال شد: {symbol} {candle_change:.2f}%")
+            logger.info(f"Instant dump sent: {symbol} {candle_change:.2f}%")
     
     async def send_30min_report(self, symbols: List[str]):
         """گزارش هر 30 دقیقه"""
@@ -402,11 +408,11 @@ class ProfessionalCryptoMonitor:
             movers_30m = await self.get_30min_movers(symbols)
             
             # ساخت پیام گزارش
-            message = f"📊 <b>گزارش 30 دقیقه‌ای</b> | {current_time}\n\n"
+            message = f"<b>30-MINUTE REPORT</b> | {current_time}\n\n"
             
             # رشدهای روزانه بالای 20%
             if daily_gainers:
-                message += "🔥 <b>رشد روزانه +20%:</b>\n"
+                message += "<b>Daily Gains +20%:</b>\n"
                 for i, coin in enumerate(daily_gainers[:5]):  # فقط 5 تای اول
                     coin_name = coin['symbol'].replace('USDT', '')
                     message += f"{i+1}. #{coin_name}: +{coin['change']:.1f}%\n"
@@ -414,7 +420,7 @@ class ProfessionalCryptoMonitor:
             
             # ریزش‌های روزانه زیر -20%
             if daily_losers:
-                message += "❄️ <b>ریزش روزانه -20%:</b>\n"
+                message += "<b>Daily Losses -20%:</b>\n"
                 for i, coin in enumerate(daily_losers[:3]):  # فقط 3 تای اول
                     coin_name = coin['symbol'].replace('USDT', '')
                     message += f"{i+1}. #{coin_name}: {coin['change']:.1f}%\n"
@@ -422,7 +428,7 @@ class ProfessionalCryptoMonitor:
             
             # حرکات 30 دقیقه‌ای
             if movers_30m:
-                message += "⚡ <b>حرکات 30 دقیقه (+20%):</b>\n"
+                message += "<b>30-min Movers (+20%):</b>\n"
                 for i, coin in enumerate(movers_30m[:3]):  # فقط 3 تای اول
                     coin_name = coin['symbol'].replace('USDT', '')
                     sign = "+" if coin['change_30m'] > 0 else ""
@@ -431,49 +437,52 @@ class ProfessionalCryptoMonitor:
             
             # اگر هیچ حرکت خاصی نبود
             if not daily_gainers and not daily_losers and not movers_30m:
-                message += "😴 <b>بازار آرام:</b>\n"
-                message += "• هیچ رشد/ریزش +20% روزانه\n"
-                message += "• هیچ حرکت +20% در 30 دقیقه\n\n"
+                message += "<b>Quiet Market:</b>\n"
+                message += "• No +20% daily gains/losses\n"
+                message += "• No +20% moves in 30min\n\n"
             
-            message += f"🔍 <b>تعداد ارز بررسی شده:</b> {len(symbols)}\n"
-            message += f"🕐 <b>بعدی:</b> {(datetime.now() + timedelta(minutes=30)).strftime('%H:%M')}\n\n"
+            message += f"<b>Monitored:</b> {len(symbols)} pairs\n"
+            message += f"<b>Next Report:</b> {(datetime.now() + timedelta(minutes=30)).strftime('%H:%M')}\n\n"
             message += "#report #30min #summary"
             
             # ارسال گزارش
             success = await self.send_telegram(message)
             if success:
-                logger.info(f"📊 گزارش 30 دقیقه‌ای ارسال شد | رشد روزانه: {len(daily_gainers)} | ریزش روزانه: {len(daily_losers)} | حرکات 30m: {len(movers_30m)}")
+                logger.info(f"30min report sent | Daily gains: {len(daily_gainers)} | Daily losses: {len(daily_losers)} | 30min movers: {len(movers_30m)}")
             
         except Exception as e:
-            logger.error(f"❌ خطا در send_30min_report: {e}")
+            logger.error(f"Error in send_30min_report: {e}")
     
     async def send_startup_message(self):
         """پیام شروع بات"""
         current_time = datetime.now().strftime("%H:%M:%S - %d/%m/%Y")
+        symbols = await self.get_all_usdt_symbols()
+        symbol_count = len(symbols) if symbols else 0
+        
         message = f"""
-🤖 <b>Professional Crypto Monitor Started!</b>
+<b>Professional Crypto Monitor Started!</b>
 
-🕐 <b>Start Time:</b> {current_time}
-📊 <b>Monitoring:</b> All USDT pairs
-🎯 <b>Instant Alerts:</b> ±4% candle moves
-📈 <b>30min Reports:</b> +20% daily/30min changes
-🕯️ <b>Candle:</b> 1 minute
-🔄 <b>Check:</b> Every minute
+<b>Start Time:</b> {current_time}
+<b>Monitoring:</b> All USDT pairs
+<b>Instant Alerts:</b> ±4% candle moves
+<b>30min Reports:</b> +20% daily/30min changes
+<b>Candle:</b> 1 minute
+<b>Check:</b> Every minute
 
-<b>✅ Monitoring {await self.get_all_usdt_symbols() and len(await self.get_all_usdt_symbols()) or 'N/A'} cryptocurrencies!</b>
+<b>Monitoring {symbol_count} cryptocurrencies!</b>
 
 #start #monitoring #professional
         """
         
         success = await self.send_telegram(message)
         if success:
-            logger.info("🎉 پیام شروع ارسال شد!")
+            logger.info("Startup message sent!")
         return success
     
     async def run(self):
         """اجرای اصلی بات"""
         await self.init_session()
-        logger.info("🤖 Professional Crypto Monitor Starting...")
+        logger.info("Professional Crypto Monitor Starting...")
         
         # ارسال پیام شروع
         await self.send_startup_message()
@@ -489,7 +498,7 @@ class ProfessionalCryptoMonitor:
                 # دریافت همه symbols
                 symbols = await self.get_all_usdt_symbols()
                 if not symbols:
-                    logger.error("❌ هیچ سیمبلی دریافت نشد!")
+                    logger.error("No symbols received!")
                     await asyncio.sleep(60)
                     continue
                 
@@ -498,7 +507,7 @@ class ProfessionalCryptoMonitor:
                 
                 total_scans += 1
                 current_time = datetime.now().strftime("%H:%M:%S")
-                logger.info(f"✅ اسکن {total_scans} | ارز: {len(symbols)} | پامپ: {pumps} | دامپ: {dumps} | {current_time}")
+                logger.info(f"Scan {total_scans} | Pairs: {len(symbols)} | Pumps: {pumps} | Dumps: {dumps} | {current_time}")
                 
                 # گزارش 30 دقیقه‌ای
                 if time.time() - self.last_report_time >= 1800:  # 30 دقیقه = 1800 ثانیه
@@ -509,29 +518,29 @@ class ProfessionalCryptoMonitor:
                 execution_time = time.time() - start_time
                 sleep_time = max(5, 60 - execution_time)  # حداقل 5 ثانیه استراحت
                 
-                logger.info(f"⏱️ زمان اجرا: {execution_time:.2f}s | استراحت: {sleep_time:.1f}s")
+                logger.info(f"Execution: {execution_time:.2f}s | Sleep: {sleep_time:.1f}s")
                 await asyncio.sleep(sleep_time)
                 
         except KeyboardInterrupt:
-            logger.info("🛑 دریافت سیگنال توقف...")
+            logger.info("Stop signal received...")
         except Exception as e:
-            logger.error(f"❌ خطای کلی: {e}")
-            error_msg = f"⚠️ خطا در بات: {str(e)[:200]}"
+            logger.error(f"General error: {e}")
+            error_msg = f"Bot error: {str(e)[:200]}"
             await self.send_telegram(error_msg)
         finally:
             self.running = False
             await self.close_session()
-            logger.info("✅ بات متوقف شد")
+            logger.info("Bot stopped")
 
 # Web Server برای deployment
 async def home_handler(request):
     return web.Response(
-        text="""🤖 Professional Crypto Pump/Dump Monitor
+        text="""Professional Crypto Pump/Dump Monitor
         
-✅ Status: Active
-📊 Instant Alerts: ±4% candle moves  
-📈 30min Reports: +20% daily/30min changes
-🔄 Check Interval: 1 minute
+Status: Active
+Instant Alerts: ±4% candle moves  
+30min Reports: +20% daily/30min changes
+Check Interval: 1 minute
         
 Bot is monitoring all cryptocurrencies!""",
         content_type='text/plain'
@@ -555,7 +564,7 @@ async def stats_handler(request):
 
 async def init_bot(app):
     """شروع بات در background"""
-    logger.info("🚀 Starting Professional Crypto Monitor...")
+    logger.info("Starting Professional Crypto Monitor...")
     monitor = ProfessionalCryptoMonitor()
     app['monitor_task'] = asyncio.create_task(monitor.run())
 
@@ -566,7 +575,7 @@ async def cleanup_bot(app):
         try:
             await app['monitor_task']
         except asyncio.CancelledError:
-            logger.info("🛑 Monitor task cancelled")
+            logger.info("Monitor task cancelled")
 
 def create_app():
     """ساخت وب اپلیکیشن"""
@@ -587,5 +596,5 @@ if __name__ == "__main__":
     app = create_app()
     port = int(os.getenv('PORT', 8080))
     
-    logger.info(f"🚀 Starting Professional Crypto Monitor on port {port}")
+    logger.info(f"Starting Professional Crypto Monitor on port {port}")
     web.run_app(app, host='0.0.0.0', port=port)
