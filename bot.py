@@ -33,6 +33,12 @@ class CryptoMonitor:
         self.pump_threshold = 4.0
         self.dump_threshold = -4.0
         
+        # Report settings
+        self.report_pump_threshold = 2.0    # 2% for reports
+        self.report_dump_threshold = -2.0   # -2% for reports
+        self.last_report_time = 0
+        self.report_interval = 600  # 10 minutes in seconds
+        
         # Only use Binance for stability
         self.api_base = 'https://api.binance.com'
         
@@ -153,6 +159,25 @@ class CryptoMonitor:
             logger.error(f"Error getting kline for {symbol}: {e}")
         return None
     
+    async def get_24h_ticker(self, symbol: str) -> Optional[Dict]:
+        """Get 24h ticker data"""
+        try:
+            url = f"{self.api_base}/api/v3/ticker/24hr"
+            params = {'symbol': symbol}
+            
+            data = await self.safe_request(url, params)
+            if data:
+                return {
+                    'symbol': symbol,
+                    'price_change_percent': float(data['priceChangePercent']),
+                    'last_price': float(data['lastPrice']),
+                    'volume': float(data['volume']),
+                    'count': int(data['count'])
+                }
+        except Exception as e:
+            logger.error(f"Error getting 24h ticker for {symbol}: {e}")
+        return None
+    
     def format_price(self, price: float) -> str:
         """Format price"""
         if price >= 1:
@@ -208,6 +233,80 @@ Time: {datetime.now().strftime("%H:%M:%S")}
         if success:
             logger.info(f"Alert sent: {symbol} {sign}{candle_change:.2f}%")
     
+    async def get_24h_movers(self, symbols: List[str]) -> Dict:
+        """Get coins with significant 24h moves"""
+        pumps = []
+        dumps = []
+        
+        # Check a larger subset for reports
+        check_count = min(100, len(symbols))
+        selected = random.sample(symbols, check_count)
+        
+        for symbol in selected:
+            ticker = await self.get_24h_ticker(symbol)
+            if not ticker:
+                continue
+            
+            change_percent = ticker['price_change_percent']
+            
+            if change_percent >= self.report_pump_threshold:
+                pumps.append({
+                    'symbol': symbol,
+                    'change': change_percent,
+                    'price': ticker['last_price']
+                })
+            elif change_percent <= self.report_dump_threshold:
+                dumps.append({
+                    'symbol': symbol,
+                    'change': change_percent,
+                    'price': ticker['last_price']
+                })
+        
+        # Sort by change percentage
+        pumps.sort(key=lambda x: x['change'], reverse=True)
+        dumps.sort(key=lambda x: x['change'])
+        
+        return {'pumps': pumps[:5], 'dumps': dumps[:5]}  # Top 5 of each
+    
+    async def send_status_report(self, symbols: List[str]):
+        """Send 10-minute status report"""
+        try:
+            movers = await self.get_24h_movers(symbols)
+            pumps = movers['pumps']
+            dumps = movers['dumps']
+            
+            message = f"📊 <b>10-Minute Report</b>\n"
+            message += f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n"
+            message += f"📈 Checking: {len(symbols)} USDT pairs\n\n"
+            
+            if pumps:
+                message += "🚀 <b>Top Pumps (24h):</b>\n"
+                for coin in pumps:
+                    coin_name = coin['symbol'].replace('USDT', '')
+                    message += f"• {coin_name}: +{coin['change']:.2f}% - {self.format_price(coin['price'])}\n"
+                message += "\n"
+            
+            if dumps:
+                message += "📉 <b>Top Dumps (24h):</b>\n"
+                for coin in dumps:
+                    coin_name = coin['symbol'].replace('USDT', '')
+                    message += f"• {coin_name}: {coin['change']:.2f}% - {self.format_price(coin['price'])}\n"
+                message += "\n"
+            
+            if not pumps and not dumps:
+                message += "😴 <b>Market Status:</b>\n"
+                message += "No significant moves (±2%) detected in checked pairs.\n"
+                message += "Market seems stable right now.\n\n"
+            
+            message += f"⚡ Alert thresholds: ±{self.pump_threshold}%\n"
+            message += f"📋 Report thresholds: ±{self.report_pump_threshold}%"
+            
+            await self.send_telegram(message)
+            logger.info(f"Status report sent - Pumps: {len(pumps)}, Dumps: {len(dumps)}")
+            
+        except Exception as e:
+            logger.error(f"Error sending status report: {e}")
+    
     async def check_moves(self, symbols: List[str]):
         """Check for significant price moves"""
         if not symbols:
@@ -239,12 +338,14 @@ Time: {datetime.now().strftime("%H:%M:%S")}
     async def send_startup_message(self):
         """Send startup notification"""
         symbols = await self.get_symbols()
-        message = f"""🤖 Crypto Monitor Started!
+        message = f"""🤖 <b>Crypto Monitor Started!</b>
 
-Time: {datetime.now().strftime("%H:%M:%S")}
-Monitoring: {len(symbols)} USDT pairs
-Alerts: ±{self.pump_threshold}% moves
-Source: Binance API
+🕒 Time: {datetime.now().strftime("%H:%M:%S")}
+📈 Monitoring: {len(symbols)} USDT pairs
+⚡ Alert thresholds: ±{self.pump_threshold}% (1min candle)
+📊 Report thresholds: ±{self.report_pump_threshold}% (24h)
+📋 Reports: Every 10 minutes
+🔗 Source: Binance API
 
 Bot is now active!"""
         
@@ -260,10 +361,12 @@ Bot is now active!"""
         
         scan_count = 0
         errors = 0
+        self.last_report_time = time.time()
         
         try:
             while self.running:
                 start_time = time.time()
+                current_time = time.time()
                 
                 try:
                     symbols = await self.get_symbols()
@@ -276,10 +379,18 @@ Bot is now active!"""
                         continue
                     
                     errors = 0
+                    
+                    # Check for immediate alerts
                     pumps, dumps = await self.check_moves(symbols)
                     
+                    # Send 10-minute status report
+                    if current_time - self.last_report_time >= self.report_interval:
+                        await self.send_status_report(symbols)
+                        self.last_report_time = current_time
+                    
                     scan_count += 1
-                    logger.info(f"Scan #{scan_count} | Pairs: {len(symbols)} | Pumps: {pumps} | Dumps: {dumps}")
+                    next_report_in = int((self.last_report_time + self.report_interval - current_time) / 60)
+                    logger.info(f"Scan #{scan_count} | Pairs: {len(symbols)} | Pumps: {pumps} | Dumps: {dumps} | Next report: {next_report_in}min")
                     
                 except Exception as e:
                     errors += 1
