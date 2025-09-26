@@ -8,14 +8,12 @@ from typing import List, Dict, Optional
 from aiohttp import web
 import time
 import sys
-import hmac
-import hashlib
 import random
 
-# حل مشکل کدگذاری
+# Encoding fix
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
-# تنظیم لاگ
+# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -24,82 +22,37 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# تنظیمات بات
-BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-CHAT_ID = os.getenv('CHAT_ID', 'YOUR_CHAT_ID_HERE')
+# Bot settings - ONLY from environment variables
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
 
-# تنظیمات API Keys
-BITUNIX_API_KEY = os.getenv('BITUNIX_API_KEY', 'b948c60da5436f3030a0f502f71fa11b')
-BITUNIX_SECRET_KEY = os.getenv('BITUNIX_SECRET_KEY', 'ff27796f41c323d2309234350d50135e')
-
-class MultiExchangeCryptoMonitor:
+class CryptoMonitor:
     def __init__(self):
         self.session = None
         self.running = True
-        self.pump_threshold = 4.0  # 4% برای پامپ فوری
-        self.dump_threshold = -4.0  # -4% برای دامپ فوری
-        self.daily_threshold = 20.0  # 20% برای گزارش روزانه
+        self.pump_threshold = 4.0
+        self.dump_threshold = -4.0
         
-        # API URLs for different exchanges
-        self.exchanges = {
-            'binance': {
-                'base_url': 'https://api.binance.com',
-                'active': True,
-                'backup_order': 1
-            },
-            'bybit': {
-                'base_url': 'https://api.bybit.com',
-                'active': True,
-                'backup_order': 2
-            },
-            'kucoin': {
-                'base_url': 'https://api.kucoin.com',
-                'active': True,
-                'backup_order': 3
-            },
-            'mexc': {
-                'base_url': 'https://api.mexc.com',
-                'active': True,
-                'backup_order': 4
-            },
-            'coinex': {
-                'base_url': 'https://api.coinex.com',
-                'active': True,
-                'backup_order': 5
-            },
-            'bitunix': {
-                'base_url': 'https://open-api.bitunix.com',
-                'active': True,
-                'backup_order': 6
-            }
-        }
-        
-        self.current_exchange = None
-        self.exchange_failures = {}
+        # Only use Binance for stability
+        self.api_base = 'https://api.binance.com'
         
         # Cache
         self.symbols_list = []
         self.last_symbols_fetch = 0
-        self.price_history = {}
-        self.last_report_time = 0
-        self.last_30min_prices = {}
         
     async def init_session(self):
-        """شروع HTTP session"""
+        """Initialize HTTP session"""
         connector = aiohttp.TCPConnector(
-            limit=30,
-            limit_per_host=10,
+            limit=20,
+            limit_per_host=5,
             ttl_dns_cache=300,
-            use_dns_cache=True,
-            ssl=False  # برای تست - در production True کنید
+            use_dns_cache=True
         )
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/json',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive'
+            'User-Agent': 'CryptoMonitor/1.0',
+            'Accept': 'application/json'
         }
         
         self.session = aiohttp.ClientSession(
@@ -107,383 +60,101 @@ class MultiExchangeCryptoMonitor:
             timeout=timeout,
             headers=headers
         )
-        logger.info("HTTP Session initialized for multi-exchange monitoring")
+        logger.info("Session initialized")
     
     async def close_session(self):
-        """بستن session"""
+        """Close session"""
         if self.session and not self.session.closed:
             await self.session.close()
             logger.info("Session closed")
     
-    async def test_network_connectivity(self):
-        """تست اتصال شبکه"""
+    async def safe_request(self, url: str, params: dict = None):
+        """Safe request with error handling"""
         try:
-            # تست اتصال ساده
-            async with self.session.get('https://httpbin.org/ip', timeout=10) as response:
+            await asyncio.sleep(0.1)  # Rate limiting
+            async with self.session.get(url, params=params, timeout=15) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"✅ Network test successful, IP: {data.get('origin', 'unknown')}")
-                    return True
+                    return await response.json()
+                elif response.status == 429:
+                    logger.warning("Rate limited, waiting...")
+                    await asyncio.sleep(60)
+                    return None
+                else:
+                    logger.warning(f"HTTP {response.status}")
+                    return None
         except Exception as e:
-            logger.error(f"❌ Network test failed: {e}")
-            return False
-        
-        return False
+            logger.error(f"Request error: {e}")
+            return None
     
-    async def test_exchange_connection(self, exchange_name: str) -> bool:
-        """تست اتصال به صرافی خاص"""
-        try:
-            if exchange_name == 'binance':
-                url = f"{self.exchanges[exchange_name]['base_url']}/api/v3/ping"
-                async with self.session.get(url, timeout=15) as response:
-                    success = response.status == 200
-                    
-            elif exchange_name == 'bybit':
-                url = f"{self.exchanges[exchange_name]['base_url']}/v2/public/time"
-                async with self.session.get(url, timeout=15) as response:
-                    success = response.status == 200
-                    
-            elif exchange_name == 'kucoin':
-                url = f"{self.exchanges[exchange_name]['base_url']}/api/v1/timestamp"
-                async with self.session.get(url, timeout=15) as response:
-                    success = response.status == 200
-                    
-            elif exchange_name == 'mexc':
-                url = f"{self.exchanges[exchange_name]['base_url']}/api/v3/ping"
-                async with self.session.get(url, timeout=15) as response:
-                    success = response.status == 200
-                    
-            elif exchange_name == 'coinex':
-                url = f"{self.exchanges[exchange_name]['base_url']}/v1/common/currency_rate"
-                async with self.session.get(url, timeout=15) as response:
-                    success = response.status == 200
-                    
-            elif exchange_name == 'bitunix':
-                url = f"{self.exchanges[exchange_name]['base_url']}/api/spot/v1/common/time"
-                async with self.session.get(url, timeout=15) as response:
-                    success = response.status == 200
-            else:
-                success = False
-            
-            if success:
-                logger.info(f"✅ {exchange_name.upper()} API connection successful")
-                self.exchange_failures[exchange_name] = 0
-                return True
-            else:
-                logger.error(f"❌ {exchange_name.upper()} API connection failed")
-                self.exchange_failures[exchange_name] = self.exchange_failures.get(exchange_name, 0) + 1
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ {exchange_name.upper()} connection test error: {e}")
-            self.exchange_failures[exchange_name] = self.exchange_failures.get(exchange_name, 0) + 1
-            return False
-    
-    async def find_working_exchange(self):
-        """پیدا کردن صرافی که کار میکند"""
-        logger.info("🔍 Searching for working exchange...")
-        
-        # مرتب کردن بر اساس backup_order
-        sorted_exchanges = sorted(
-            self.exchanges.items(),
-            key=lambda x: (self.exchange_failures.get(x[0], 0), x[1]['backup_order'])
-        )
-        
-        for exchange_name, exchange_info in sorted_exchanges:
-            if not exchange_info['active']:
-                continue
-                
-            logger.info(f"🧪 Testing {exchange_name.upper()}...")
-            if await self.test_exchange_connection(exchange_name):
-                self.current_exchange = exchange_name
-                logger.info(f"✅ Using {exchange_name.upper()} as primary exchange")
-                return True
-            
-            await asyncio.sleep(2)  # وقفه بین تست‌ها
-        
-        logger.error("❌ No working exchange found!")
-        return False
-    
-    async def get_symbols_binance(self) -> List[Dict]:
-        """دریافت symbols از Binance"""
-        try:
-            url = f"{self.exchanges['binance']['base_url']}/api/v3/exchangeInfo"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    usdt_symbols = []
-                    for symbol in data.get('symbols', []):
-                        if (symbol['symbol'].endswith('USDT') and 
-                            symbol['status'] == 'TRADING'):
-                            usdt_symbols.append({
-                                'symbol': symbol['symbol'],
-                                'status': symbol['status']
-                            })
-                    return usdt_symbols
-        except Exception as e:
-            logger.error(f"Error getting Binance symbols: {e}")
-        return []
-    
-    async def get_symbols_bybit(self) -> List[Dict]:
-        """دریافت symbols از Bybit"""
-        try:
-            url = f"{self.exchanges['bybit']['base_url']}/v2/public/symbols"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    usdt_symbols = []
-                    for symbol in data.get('result', []):
-                        if symbol['name'].endswith('USDT'):
-                            usdt_symbols.append({
-                                'symbol': symbol['name'],
-                                'status': 'TRADING'
-                            })
-                    return usdt_symbols
-        except Exception as e:
-            logger.error(f"Error getting Bybit symbols: {e}")
-        return []
-    
-    async def get_symbols_kucoin(self) -> List[Dict]:
-        """دریافت symbols از KuCoin"""
-        try:
-            url = f"{self.exchanges['kucoin']['base_url']}/api/v1/symbols"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    usdt_symbols = []
-                    for symbol in data.get('data', []):
-                        if (symbol['symbol'].endswith('-USDT') and 
-                            symbol['enableTrading']):
-                            usdt_symbols.append({
-                                'symbol': symbol['symbol'].replace('-', ''),
-                                'status': 'TRADING'
-                            })
-                    return usdt_symbols
-        except Exception as e:
-            logger.error(f"Error getting KuCoin symbols: {e}")
-        return []
-    
-    async def get_symbols_mexc(self) -> List[Dict]:
-        """دریافت symbols از MEXC"""
-        try:
-            url = f"{self.exchanges['mexc']['base_url']}/api/v3/exchangeInfo"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    usdt_symbols = []
-                    for symbol in data.get('symbols', []):
-                        if (symbol['symbol'].endswith('USDT') and 
-                            symbol['status'] == 'ENABLED'):
-                            usdt_symbols.append({
-                                'symbol': symbol['symbol'],
-                                'status': 'TRADING'
-                            })
-                    return usdt_symbols
-        except Exception as e:
-            logger.error(f"Error getting MEXC symbols: {e}")
-        return []
-    
-    async def get_symbols_coinex(self) -> List[Dict]:
-        """دریافت symbols از CoinEx"""
-        try:
-            url = f"{self.exchanges['coinex']['base_url']}/v1/market/info"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    usdt_symbols = []
-                    for symbol_name, symbol_info in data.get('data', {}).items():
-                        if symbol_name.endswith('USDT'):
-                            usdt_symbols.append({
-                                'symbol': symbol_name,
-                                'status': 'TRADING'
-                            })
-                    return usdt_symbols
-        except Exception as e:
-            logger.error(f"Error getting CoinEx symbols: {e}")
-        return []
-    
-    async def get_symbols_bitunix(self) -> List[Dict]:
-        """دریافت symbols از BitUnix"""
-        try:
-            url = f"{self.exchanges['bitunix']['base_url']}/api/spot/v1/market/symbols"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    usdt_symbols = []
-                    for symbol in data.get('data', []):
-                        if (symbol.get('symbol', '').endswith('USDT') and 
-                            symbol.get('status') == 'TRADING'):
-                            usdt_symbols.append({
-                                'symbol': symbol['symbol'],
-                                'status': symbol['status']
-                            })
-                    return usdt_symbols
-        except Exception as e:
-            logger.error(f"Error getting BitUnix symbols: {e}")
-        return []
-    
-    async def get_all_symbols(self) -> List[Dict]:
-        """دریافت تمام symbols از صرافی فعلی"""
+    async def get_symbols(self) -> List[str]:
+        """Get USDT symbols from Binance"""
         current_time = time.time()
         
-        # استفاده از cache اگر تازه باشه
-        if (self.symbols_list and 
-            current_time - self.last_symbols_fetch < 1800):  # 30 دقیقه
-            logger.info(f"Using cached symbols: {len(self.symbols_list)} pairs from {self.current_exchange}")
+        # Use cache if recent
+        if self.symbols_list and current_time - self.last_symbols_fetch < 1800:
             return self.symbols_list
         
-        if not self.current_exchange:
-            if not await self.find_working_exchange():
-                return []
-        
         try:
-            symbols = []
+            url = f"{self.api_base}/api/v3/exchangeInfo"
+            data = await self.safe_request(url)
             
-            if self.current_exchange == 'binance':
-                symbols = await self.get_symbols_binance()
-            elif self.current_exchange == 'bybit':
-                symbols = await self.get_symbols_bybit()
-            elif self.current_exchange == 'kucoin':
-                symbols = await self.get_symbols_kucoin()
-            elif self.current_exchange == 'mexc':
-                symbols = await self.get_symbols_mexc()
-            elif self.current_exchange == 'coinex':
-                symbols = await self.get_symbols_coinex()
-            elif self.current_exchange == 'bitunix':
-                symbols = await self.get_symbols_bitunix()
-            
-            if symbols:
-                self.symbols_list = symbols
-                self.last_symbols_fetch = current_time
-                logger.info(f"✅ Fetched {len(symbols)} USDT pairs from {self.current_exchange.upper()}")
-                return symbols
-            else:
-                # اگر صرافی فعلی کار نکرد، صرافی دیگه پیدا کن
-                logger.warning(f"No symbols from {self.current_exchange}, trying other exchanges...")
-                self.current_exchange = None
-                if await self.find_working_exchange():
-                    return await self.get_all_symbols()
+            if data:
+                usdt_symbols = []
+                for symbol in data.get('symbols', []):
+                    if symbol['symbol'].endswith('USDT') and symbol['status'] == 'TRADING':
+                        usdt_symbols.append(symbol['symbol'])
                 
+                self.symbols_list = usdt_symbols
+                self.last_symbols_fetch = current_time
+                logger.info(f"Loaded {len(usdt_symbols)} USDT pairs")
+                return usdt_symbols
         except Exception as e:
-            logger.error(f"Error getting symbols from {self.current_exchange}: {e}")
-            self.current_exchange = None
-            
-        return self.symbols_list if self.symbols_list else []
+            logger.error(f"Error getting symbols: {e}")
+        
+        return self.symbols_list
     
-    async def get_kline_binance(self, symbol: str) -> Optional[Dict]:
-        """دریافت کندل از Binance"""
+    async def get_kline(self, symbol: str) -> Optional[Dict]:
+        """Get 1m kline data"""
         try:
-            url = f"{self.exchanges['binance']['base_url']}/api/v3/klines"
+            url = f"{self.api_base}/api/v3/klines"
             params = {
                 'symbol': symbol,
                 'interval': '1m',
                 'limit': 2
             }
             
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if len(data) >= 2:
-                        current_candle = data[-1]  # آخرین کندل
-                        prev_candle = data[-2]     # کندل قبلی
-                        
-                        current_open = float(current_candle[1])
-                        current_close = float(current_candle[4])
-                        current_high = float(current_candle[2])
-                        current_low = float(current_candle[3])
-                        current_volume = float(current_candle[5])
-                        prev_close = float(prev_candle[4])
-                        
-                        # محاسبه تغییرات
-                        candle_change = ((current_close - current_open) / current_open) * 100 if current_open > 0 else 0
-                        total_change = ((current_close - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                        
-                        return {
-                            'symbol': symbol,
-                            'open': current_open,
-                            'high': current_high,
-                            'low': current_low,
-                            'close': current_close,
-                            'volume': current_volume,
-                            'candle_change': candle_change,
-                            'total_change': total_change,
-                            'prev_close': prev_close,
-                            'timestamp': current_candle[0]
-                        }
+            data = await self.safe_request(url, params)
+            if data and len(data) >= 2:
+                current = data[-1]
+                prev = data[-2]
+                
+                open_price = float(current[1])
+                close_price = float(current[4])
+                high_price = float(current[2])
+                low_price = float(current[3])
+                volume = float(current[5])
+                prev_close = float(prev[4])
+                
+                if open_price > 0 and prev_close > 0:
+                    candle_change = ((close_price - open_price) / open_price) * 100
+                    total_change = ((close_price - prev_close) / prev_close) * 100
+                    
+                    return {
+                        'symbol': symbol,
+                        'open': open_price,
+                        'close': close_price,
+                        'high': high_price,
+                        'low': low_price,
+                        'volume': volume,
+                        'candle_change': candle_change,
+                        'total_change': total_change
+                    }
         except Exception as e:
-            logger.error(f"Error getting Binance kline for {symbol}: {e}")
+            logger.error(f"Error getting kline for {symbol}: {e}")
         return None
     
-    async def get_24h_binance(self) -> Dict:
-        """دریافت تیکر 24 ساعته از Binance"""
-        try:
-            url = f"{self.exchanges['binance']['base_url']}/api/v3/ticker/24hr"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    tickers = {}
-                    for ticker in data:
-                        symbol = ticker['symbol']
-                        if symbol.endswith('USDT'):
-                            tickers[symbol] = {
-                                'symbol': symbol,
-                                'price': float(ticker['lastPrice']),
-                                'change_24h': float(ticker['priceChangePercent']),
-                                'volume': float(ticker['volume'])
-                            }
-                    return tickers
-        except Exception as e:
-            logger.error(f"Error getting Binance 24h tickers: {e}")
-        return {}
-    
-    async def get_kline_data(self, symbol: str) -> Optional[Dict]:
-        """دریافت کندل از صرافی فعلی"""
-        if not self.current_exchange:
-            return None
-        
-        try:
-            if self.current_exchange == 'binance':
-                return await self.get_kline_binance(symbol)
-            # برای سایر صرافی‌ها، فعلاً از Binance استفاده کن
-            # میتونی بعداً سایر صرافی‌ها رو اضافه کنی
-            else:
-                return await self.get_kline_binance(symbol)
-                
-        except Exception as e:
-            logger.error(f"Error getting kline for {symbol} from {self.current_exchange}: {e}")
-            return None
-    
-    async def get_24h_tickers(self) -> Dict:
-        """دریافت تیکرهای 24 ساعته"""
-        if not self.current_exchange:
-            return {}
-        
-        try:
-            if self.current_exchange == 'binance':
-                return await self.get_24h_binance()
-            else:
-                return await self.get_24h_binance()  # fallback
-                
-        except Exception as e:
-            logger.error(f"Error getting 24h tickers from {self.current_exchange}: {e}")
-            return {}
-    
-    def get_coin_rank_category(self, symbol: str) -> str:
-        """دسته‌بندی بر اساس symbol"""
-        top_coins = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 
-                    'SOLUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT', 'LTCUSDT']
-        
-        if symbol in top_coins[:3]:
-            return "TOP3"
-        elif symbol in top_coins[:10]:
-            return "TOP10"
-        elif symbol in top_coins:
-            return "MAJOR"
-        else:
-            return "ALT"
-    
     def format_price(self, price: float) -> str:
-        """فرمت کردن قیمت"""
+        """Format price"""
         if price >= 1:
             return f"${price:.4f}"
         elif price >= 0.01:
@@ -492,12 +163,11 @@ class MultiExchangeCryptoMonitor:
             return f"${price:.8f}"
     
     async def send_telegram(self, message: str) -> bool:
-        """ارسال پیام تلگرام"""
+        """Send Telegram message"""
         try:
-            if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or CHAT_ID == 'YOUR_CHAT_ID_HERE':
-                logger.warning("BOT_TOKEN or CHAT_ID not set!")
-                logger.info(f"TEST MESSAGE: {message[:100]}...")
-                return False
+            if not BOT_TOKEN or not CHAT_ID:
+                logger.info(f"TEST: {message[:100]}")
+                return True  # Simulate success for testing
                 
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
             data = {
@@ -508,191 +178,171 @@ class MultiExchangeCryptoMonitor:
             }
             
             async with self.session.post(url, json=data) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Telegram error: {response.status} - {error_text}")
-                    return False
-                    
+                return response.status == 200
         except Exception as e:
-            logger.error(f"Error in send_telegram: {e}")
+            logger.error(f"Telegram error: {e}")
             return False
     
-    async def check_instant_moves(self, symbols: List[Dict]) -> tuple:
-        """بررسی حرکات فوری 4%+"""
-        pumps_found = 0
-        dumps_found = 0
+    async def send_alert(self, kline_data: Dict, is_pump: bool):
+        """Send pump/dump alert"""
+        symbol = kline_data['symbol']
+        candle_change = kline_data['candle_change']
+        close_price = kline_data['close']
         
+        coin_name = symbol.replace('USDT', '')
+        alert_type = "PUMP" if is_pump else "DUMP"
+        emoji = "🚀" if is_pump else "📉"
+        sign = "+" if is_pump else ""
+        
+        message = f"""{emoji} {alert_type} ALERT!
+
+Coin: {coin_name}
+Symbol: {symbol}
+Change: {sign}{candle_change:.2f}%
+Price: {self.format_price(close_price)}
+Time: {datetime.now().strftime("%H:%M:%S")}
+
+#{coin_name.lower()} #{alert_type.lower()}"""
+        
+        success = await self.send_telegram(message)
+        if success:
+            logger.info(f"Alert sent: {symbol} {sign}{candle_change:.2f}%")
+    
+    async def check_moves(self, symbols: List[str]):
+        """Check for significant price moves"""
         if not symbols:
-            logger.warning("No symbols to check")
-            return 0, 0
+            return
         
-        # انتخاب تصادفی subset از symbols برای کاهش load
-        max_check = min(100, len(symbols))  # حداکثر 100 جفت
-        selected_symbols = random.sample(symbols, max_check) if len(symbols) > max_check else symbols
+        # Check random subset to reduce load
+        check_count = min(30, len(symbols))
+        selected = random.sample(symbols, check_count)
         
-        # بررسی batch
-        batch_size = 20
+        pumps = 0
+        dumps = 0
         
-        for i in range(0, len(selected_symbols), batch_size):
-            batch = selected_symbols[i:i + batch_size]
+        for symbol in selected:
+            kline = await self.get_kline(symbol)
+            if not kline:
+                continue
+                
+            change = kline['candle_change']
             
-            for symbol_data in batch:
-                symbol = symbol_data.get('symbol')
-                if not symbol:
-                    continue
-                
-                kline_data = await self.get_kline_data(symbol)
-                if not kline_data:
-                    continue
-                
-                candle_change = kline_data['candle_change']
-                
-                # چک پامپ فوری
-                if candle_change >= self.pump_threshold:
-                    await self.send_pump_alert(kline_data)
-                    pumps_found += 1
-                
-                # چک دامپ فوری
-                elif candle_change <= self.dump_threshold:
-                    await self.send_dump_alert(kline_data)
-                    dumps_found += 1
-            
-            # وقفه بین batch ها
-            if i + batch_size < len(selected_symbols):
-                await asyncio.sleep(3)  # وقفه بیشتر برای rate limiting
+            if change >= self.pump_threshold:
+                await self.send_alert(kline, True)
+                pumps += 1
+            elif change <= self.dump_threshold:
+                await self.send_alert(kline, False)
+                dumps += 1
         
-        return pumps_found, dumps_found
+        return pumps, dumps
     
-    async def send_pump_alert(self, kline_data: Dict):
-        """ارسال هشدار پامپ"""
-        symbol = kline_data['symbol']
-        candle_change = kline_data['candle_change']
-        total_change = kline_data['total_change']
-        current_price = kline_data['close']
-        volume = kline_data['volume']
-        
-        coin_name = symbol.replace('USDT', '')
-        rank_category = self.get_coin_rank_category(symbol)
-        
-        message = f"""
-<b>🚀 PUMP ALERT!</b>
+    async def send_startup_message(self):
+        """Send startup notification"""
+        symbols = await self.get_symbols()
+        message = f"""🤖 Crypto Monitor Started!
 
-<b>Coin:</b> #{coin_name} ({rank_category})
-<b>Symbol:</b> {symbol}
-<b>1m Candle:</b> <b>+{candle_change:.2f}%</b>
-<b>Total Change:</b> {total_change:+.2f}%
-<b>Price:</b> {self.format_price(current_price)}
-<b>Volume:</b> {volume:,.0f}
-<b>Exchange:</b> {self.current_exchange.upper()}
-<b>Time:</b> {datetime.now().strftime("%H:%M:%S")}
+Time: {datetime.now().strftime("%H:%M:%S")}
+Monitoring: {len(symbols)} USDT pairs
+Alerts: ±{self.pump_threshold}% moves
+Source: Binance API
 
-<b>🔥 1-minute candle moved above {self.pump_threshold}%!</b>
-
-#pump #alert #{coin_name.lower()} #{self.current_exchange}
-        """
+Bot is now active!"""
         
-        success = await self.send_telegram(message.strip())
-        if success:
-            logger.info(f"✅ Pump alert sent: {symbol} +{candle_change:.2f}% via {self.current_exchange}")
+        return await self.send_telegram(message)
     
-    async def send_dump_alert(self, kline_data: Dict):
-        """ارسال هشدار دامپ"""
-        symbol = kline_data['symbol']
-        candle_change = kline_data['candle_change']
-        total_change = kline_data['total_change']
-        current_price = kline_data['close']
-        volume = kline_data['volume']
+    async def run(self):
+        """Main monitoring loop"""
+        await self.init_session()
+        logger.info("Crypto Monitor starting...")
         
-        coin_name = symbol.replace('USDT', '')
-        rank_category = self.get_coin_rank_category(symbol)
+        # Send startup message
+        await self.send_startup_message()
         
-        message = f"""
-<b>📉 DUMP ALERT!</b>
-
-<b>Coin:</b> #{coin_name} ({rank_category})
-<b>Symbol:</b> {symbol}
-<b>1m Candle:</b> <b>{candle_change:.2f}%</b>
-<b>Total Change:</b> {total_change:+.2f}%
-<b>Price:</b> {self.format_price(current_price)}
-<b>Volume:</b> {volume:,.0f}
-<b>Exchange:</b> {self.current_exchange.upper()}
-<b>Time:</b> {datetime.now().strftime("%H:%M:%S")}
-
-<b>⚠️ 1-minute candle moved below {self.dump_threshold}%!</b>
-
-#dump #alert #{coin_name.lower()} #{self.current_exchange}
-        """
+        scan_count = 0
+        errors = 0
         
-        success = await self.send_telegram(message.strip())
-        if success:
-            logger.info(f"✅ Dump alert sent: {symbol} {candle_change:.2f}% via {self.current_exchange}")
-    
-    async def send_30min_report(self, symbols: List[Dict]):
-        """گزارش هر 30 دقیقه"""
         try:
-            current_time = datetime.now().strftime("%H:%M - %d/%m")
-            
-            # دریافت تیکرهای 24 ساعته
-            tickers_24h = await self.get_24h_tickers()
-            
-            daily_gainers = []
-            daily_losers = []
-            recent_movers = []
-            current_timestamp = time.time()
-            
-            for ticker_symbol, ticker_data in tickers_24h.items():
-                change_24h = ticker_data['change_24h']
-                current_price = ticker_data['price']
+            while self.running:
+                start_time = time.time()
                 
-                # تغییرات روزانه بالای 20%
-                if change_24h >= self.daily_threshold:
-                    daily_gainers.append({
-                        'symbol': ticker_symbol,
-                        'change': change_24h,
-                        'price': current_price,
-                        'volume': ticker_data['volume']
-                    })
-                elif change_24h <= -self.daily_threshold:
-                    daily_losers.append({
-                        'symbol': ticker_symbol,
-                        'change': change_24h,
-                        'price': current_price,
-                        'volume': ticker_data['volume']
-                    })
-                
-                # چک تغییرات 30 دقیقه اخیر
-                if ticker_symbol in self.last_30min_prices:
-                    last_30min_price = self.last_30min_prices[ticker_symbol]['price']
-                    time_diff = current_timestamp - self.last_30min_prices[ticker_symbol]['timestamp']
+                try:
+                    symbols = await self.get_symbols()
+                    if not symbols:
+                        errors += 1
+                        logger.error(f"No symbols! Error #{errors}")
+                        if errors >= 5:
+                            break
+                        await asyncio.sleep(300)  # 5 minutes
+                        continue
                     
-                    if 1500 <= time_diff <= 2100:  # 25-35 دقیقه
-                        if last_30min_price > 0:
-                            change_30min = ((current_price - last_30min_price) / last_30min_price) * 100
-                            
-                            if abs(change_30min) >= self.daily_threshold:
-                                recent_movers.append({
-                                    'symbol': ticker_symbol,
-                                    'change': change_30min,
-                                    'price': current_price,
-                                    'volume': ticker_data['volume']
-                                })
+                    errors = 0
+                    pumps, dumps = await self.check_moves(symbols)
+                    
+                    scan_count += 1
+                    logger.info(f"Scan #{scan_count} | Pairs: {len(symbols)} | Pumps: {pumps} | Dumps: {dumps}")
+                    
+                except Exception as e:
+                    errors += 1
+                    logger.error(f"Scan error: {e} (#{errors})")
+                    if errors >= 10:
+                        break
                 
-                # بروزرسانی قیمت‌های 30 دقیقه قبل
-                self.last_30min_prices[ticker_symbol] = {
-                    'price': current_price,
-                    'timestamp': current_timestamp
-                }
-            
-            # مرتب‌سازی
-            daily_gainers.sort(key=lambda x: x['change'], reverse=True)
-            daily_losers.sort(key=lambda x: x['change'])
-            recent_movers.sort(key=lambda x: abs(x['change']), reverse=True)
-            
-            # ساخت پیام گزارش
-            message = f"<b>📊 30-MINUTE REPORT</b> | {current_time}\n\n"
-            
-            # رشدهای روزانه بالای 20%
-            if daily_gainers:
-                message += "<b>📈 Daily Gains +
+                # Sleep calculation
+                elapsed = time.time() - start_time
+                sleep_time = max(60, 240 - elapsed)  # Target 4 minutes, min 1 minute
+                
+                logger.info(f"Scan took {elapsed:.1f}s, sleeping {sleep_time:.1f}s")
+                await asyncio.sleep(sleep_time)
+                
+        except KeyboardInterrupt:
+            logger.info("Shutdown requested")
+        except Exception as e:
+            logger.error(f"Critical error: {e}")
+            await self.send_telegram(f"🚨 Bot error: {str(e)[:100]}")
+        finally:
+            self.running = False
+            await self.close_session()
+            logger.info("Monitor stopped")
+
+# Web handlers for Render.com
+async def home_handler(request):
+    return web.Response(text="🤖 Crypto Monitor - Running", content_type='text/plain')
+
+async def health_handler(request):
+    return web.json_response({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
+async def init_bot(app):
+    """Start bot in background"""
+    monitor = CryptoMonitor()
+    app['monitor_task'] = asyncio.create_task(monitor.run())
+
+async def cleanup_bot(app):
+    """Cleanup resources"""
+    if 'monitor_task' in app:
+        app['monitor_task'].cancel()
+        try:
+            await app['monitor_task']
+        except asyncio.CancelledError:
+            pass
+
+def create_app():
+    """Create web application"""
+    app = web.Application()
+    app.router.add_get('/', home_handler)
+    app.router.add_get('/health', health_handler)
+    app.on_startup.append(init_bot)
+    app.on_cleanup.append(cleanup_bot)
+    return app
+
+if __name__ == "__main__":
+    # Environment check
+    if not BOT_TOKEN:
+        logger.warning("BOT_TOKEN not set - running in test mode")
+    if not CHAT_ID:
+        logger.warning("CHAT_ID not set - running in test mode")
+    
+    app = create_app()
+    port = int(os.getenv('PORT', 8080))
+    
+    logger.info(f"Starting server on port {port}")
+    web.run_app(app, host='0.0.0.0', port=port)
