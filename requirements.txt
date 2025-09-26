@@ -1,4 +1,2 @@
 aiohttp==3.9.1
-asyncio
-requests==2.31.0
 python-dateutil==2.8.2
