@@ -1,2 +1,1 @@
-aiohttp==3.9.1
-asyncio-timeout==4.0.3
+aiohttp>=3.8.0
