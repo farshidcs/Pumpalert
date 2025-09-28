@@ -11,18 +11,19 @@ logger = logging.getLogger(__name__)
 # تنظیمات بات
 BOT_TOKEN = "8454411687:AAGLoczSqO_ptazxaCaBfHiiyL05yMMuCGw"
 CHAT_ID = "1758259682"
-API_KEY = "b948c60da5436f3030a0f502f71fa11b"  # کلید API شما (اختیاری برای عمومی)
 
 class MultiCoinMonitor:
     def __init__(self):
         self.session = None
+        # تبدیل نمادها به فرمت کوین‌بیس
         self.symbols = [
-            "PORT3-USDT",  # فرمت Coinbase: با - به جای _
-            "KAITO-USDT", 
-            "AEVO-USDT",
-            "COAI-USDT"
+            "PORT3-USD",
+            "KAITO-USD", 
+            "AEVO-USD",
+            "COAI-USD"
         ]
-        self.threshold = 2.0  # 2% threshold for alerts
+        self.threshold = 1.0  # 1% threshold for alerts
+        self.base_url = "https://api.exchange.coinbase.com"
         
     async def init_session(self):
         """شروع session"""
@@ -34,7 +35,7 @@ class MultiCoinMonitor:
             connector=connector,
             headers={
                 'User-Agent': 'MultiCoinMonitor/1.0',
-                'Authorization': f'Bearer {API_KEY}' if API_KEY else None  # اختیاری
+                'Accept': 'application/json'
             }
         )
         logger.info("Session started")
@@ -46,12 +47,14 @@ class MultiCoinMonitor:
             logger.info("Session closed")
     
     async def get_1min_candle(self, symbol):
-        """گرفتن کندل 1 دقیقه ای از Coinbase"""
+        """گرفتن کندل 1 دقیقه ای از کوین‌بیس"""
         try:
-            url = f"https://api.exchange.coinbase.com/products/{symbol}/candles"
+            # استفاده از Coinbase Pro API برای کندل‌ها
+            url = f"{self.base_url}/products/{symbol}/candles"
             params = {
-                'granularity': 60,  # 1min
-                'limit': 2
+                'start': (datetime.now().timestamp() - 180),  # 3 دقیقه قبل
+                'end': datetime.now().timestamp(),
+                'granularity': 60  # 60 ثانیه (1 دقیقه)
             }
             
             timeout = aiohttp.ClientTimeout(total=10)
@@ -59,29 +62,54 @@ class MultiCoinMonitor:
                 if response.status == 200:
                     data = await response.json()
                     
-                    if isinstance(data, list) and len(data) >= 2:
-                        # Coinbase format: [timestamp, low, high, open, close, volume] - reverse for chronological
-                        klines = sorted(data, key=lambda x: x[0])  # sort by timestamp
-                        current_candle = klines[-1]
-                        prev_candle = klines[-2]
+                    if len(data) >= 2:
+                        # کوین‌بیس کندل‌ها را به صورت [timestamp, low, high, open, close, volume] برمی‌گرداند
+                        current_candle = data[-1]  # آخرین کندل
+                        prev_candle = data[-2]     # کندل قبلی
                         
-                        open_price = float(current_candle[3])  # open
+                        open_price = float(current_candle[3])   # open
                         close_price = float(current_candle[4])  # close
-                        prev_close = float(prev_candle[4])     # prev close
+                        prev_close = float(prev_candle[4])      # close قبلی
                         
-                        # محاسبه تغییر از prev_close به close فعلی
-                        if prev_close > 0:
-                            candle_change = ((close_price - prev_close) / prev_close) * 100
+                        # محاسبه تغییر کندل
+                        if open_price > 0:
+                            candle_change = ((close_price - open_price) / open_price) * 100
                         else:
                             candle_change = 0
                         
                         return {
                             'symbol': symbol,
-                            'candle_change': candle_change
+                            'candle_change': candle_change,
+                            'price': close_price
                         }
+                    else:
+                        logger.warning(f"نداده کافی برای {symbol}")
+                        return None
+                        
+                else:
+                    logger.error(f"خطای HTTP {response.status} برای {symbol}")
+                    return None
                         
         except Exception as e:
             logger.error(f"خطا در گرفتن کندل {symbol}: {e}")
+        return None
+    
+    async def get_24h_stats(self, symbol):
+        """گرفتن آمار 24 ساعته"""
+        try:
+            url = f"{self.base_url}/products/{symbol}/stats"
+            
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        'volume': float(data.get('volume', 0)),
+                        'high': float(data.get('high', 0)),
+                        'low': float(data.get('low', 0)),
+                        'last': float(data.get('last', 0))
+                    }
+        except Exception as e:
+            logger.error(f"خطا در گرفتن آمار {symbol}: {e}")
         return None
     
     async def send_telegram(self, message):
@@ -101,7 +129,7 @@ class MultiCoinMonitor:
             logger.error(f"خطا در ارسال پیام: {e}")
             return False
     
-    async def send_alert(self, coin_name, change):
+    async def send_alert(self, coin_name, change, price=None):
         """ارسال هشدار ساده"""
         if change >= self.threshold:
             alert_type = "PUMP"
@@ -114,10 +142,13 @@ class MultiCoinMonitor:
         else:
             return
         
+        price_info = f"\n💰 Price: ${price:.4f}" if price else ""
+        
         message = f"""{emoji} <b>{alert_type}</b>
 
-{coin_name}: {sign}{change:.2f}%
-{datetime.now().strftime("%H:%M:%S")}"""
+{coin_name}: {sign}{change:.2f}%{price_info}
+🕒 {datetime.now().strftime("%H:%M:%S")}
+📊 Exchange: Coinbase"""
         
         success = await self.send_telegram(message)
         if success:
@@ -125,13 +156,14 @@ class MultiCoinMonitor:
     
     async def send_status_report(self):
         """گزارش وضعیت ساده"""
-        report_lines = ["📊 <b>Status Report</b>\n"]
+        report_lines = ["📊 <b>Status Report</b> (Coinbase)\n"]
         
         for symbol in self.symbols:
             candle_data = await self.get_1min_candle(symbol)
             if candle_data:
-                coin_name = symbol.replace('-USDT', '')
+                coin_name = symbol.replace('-USD', '')
                 change = candle_data['candle_change']
+                price = candle_data.get('price', 0)
                 
                 if change > 0:
                     emoji = "🟢"
@@ -140,9 +172,13 @@ class MultiCoinMonitor:
                     emoji = "🔴"
                     sign = ""
                 
-                report_lines.append(f"{emoji} {coin_name}: {sign}{change:.2f}%")
+                report_lines.append(f"{emoji} {coin_name}: {sign}{change:.2f}% (${price:.4f})")
+            else:
+                coin_name = symbol.replace('-USD', '')
+                report_lines.append(f"⚠️ {coin_name}: Data unavailable")
         
         report_lines.append(f"\n🕒 {datetime.now().strftime('%H:%M:%S')}")
+        report_lines.append("📊 Exchange: Coinbase")
         message = "\n".join(report_lines)
         
         await self.send_telegram(message)
@@ -153,21 +189,28 @@ class MultiCoinMonitor:
         for symbol in self.symbols:
             candle_data = await self.get_1min_candle(symbol)
             if candle_data:
-                coin_name = symbol.replace('-USDT', '')
+                coin_name = symbol.replace('-USD', '')
                 change = candle_data['candle_change']
-                await self.send_alert(coin_name, change)
+                price = candle_data.get('price')
+                await self.send_alert(coin_name, change, price)
             
-            # فاصله کوتاه بین درخواست‌ها
-            await asyncio.sleep(0.5)
+            # فاصله کوتاه بین درخواست‌ها برای جلوگیری از rate limiting
+            await asyncio.sleep(1)
     
     async def run(self):
         """اجرای اصلی"""
         await self.init_session()
-        logger.info("Multi-Coin Monitor started!")
+        logger.info("Multi-Coin Monitor started with Coinbase API!")
         
         # پیام شروع
-        coin_list = ", ".join([s.replace('-USDT', '') for s in self.symbols])
-        await self.send_telegram(f"🤖 Multi-Coin Monitor started! (Coinbase API)\n\nCoins: {coin_list}\nThreshold: ±{self.threshold}%\nReports every 5min")
+        coin_list = ", ".join([s.replace('-USD', '') for s in self.symbols])
+        await self.send_telegram(f"""🤖 <b>Multi-Coin Monitor Started!</b>
+
+📊 Exchange: Coinbase
+💰 Coins: {coin_list}
+📈 Threshold: ±{self.threshold}%
+⏰ Reports every 5min
+🔄 Check interval: 1min""")
         
         retry_count = 0
         max_retries = 3
@@ -193,7 +236,7 @@ class MultiCoinMonitor:
                     logger.error(f"Error {retry_count}/{max_retries}: {e}")
                     
                     if retry_count >= max_retries:
-                        await self.send_telegram("🚨 Monitor having issues. Will retry in 5 minutes.")
+                        await self.send_telegram("🚨 Monitor having issues with Coinbase API. Will retry in 5 minutes.")
                         await asyncio.sleep(300)
                         retry_count = 0
                         minute_counter = 0
@@ -206,7 +249,6 @@ class MultiCoinMonitor:
             logger.error(f"Critical error: {e}")
             await self.send_telegram(f"🚨 Critical Error: {str(e)[:100]}")
         finally:
-            await self.send_telegram("🛑 Multi-Coin Monitor stopped")
             await self.close_session()
             logger.info("Monitor stopped")
 
@@ -214,7 +256,7 @@ class MultiCoinMonitor:
 from aiohttp import web
 
 async def health_handler(request):
-    return web.json_response({"status": "Multi-Coin Monitor OK"})
+    return web.json_response({"status": "Multi-Coin Monitor OK - Coinbase API"})
 
 async def init_bot(app):
     monitor = MultiCoinMonitor()
@@ -235,5 +277,5 @@ if __name__ == "__main__":
     app = create_app()
     port = int(os.getenv('PORT', 8080))
     
-    logger.info(f"Starting Multi-Coin Monitor on port {port}")
+    logger.info(f"Starting Multi-Coin Monitor (Coinbase) on port {port}")
     web.run_app(app, host='0.0.0.0', port=port)
