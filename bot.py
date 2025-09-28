@@ -274,8 +274,8 @@ def create_app():
     return app
 
 if __name__ == "__main__":
-    app = create_app()
-    port = int(os.getenv('PORT', 8080))
-    
-    logger.info(f"Starting Multi-Coin Monitor (Coinbase) on port {port}")
-    web.run_app(app, host='0.0.0.0', port=port)
+    monitor = MultiCoinMonitor()
+    try:
+        asyncio.run(monitor.run())
+    except KeyboardInterrupt:
+        logger.info("Stopped by user")
