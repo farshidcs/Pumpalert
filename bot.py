@@ -43,42 +43,47 @@ class MultiCoinMonitor:
     
     async def get_1min_candle(self, symbol):
         try:
-            timestamp = str(int(time.time() * 1000))
+            url = "https://fapi.bitunix.com/api/v1/futures/market/kline"
             params = {
-                'coin_pair': symbol,
-                'type': '1min',
-                'limit': 2,
-                'timestamp': timestamp
-            }
-            
-            # Create signature
-            query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
-            signature = hmac.new(
-                BITUNIX_SECRET_KEY.encode('utf-8'),
-                query_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            params['signature'] = signature
-            
-            url = "https://openapi.bitunix.com/api/spot/v1/market/kline"
-            headers = {
-                'X-API-KEY': BITUNIX_API_KEY,
-                'Content-Type': 'application/json'
+                'symbol': symbol,
+                'interval': '1m',
+                'limit': 2
             }
             
             timeout = aiohttp.ClientTimeout(total=10)
-            async with self.session.get(url, params=params, headers=headers, timeout=timeout) as response:
+            async with self.session.get(url, params=params, timeout=timeout) as response:
                 if response.status == 200:
                     data = await response.json()
                     logger.info(f"API Response: {data}")
                     
-                    if data.get('code') == 200 and data.get('data') and len(data['data']) >= 2:
+                    if isinstance(data, list) and len(data) >= 2:
+                        # Bitunix futures format: [timestamp, open, high, low, close, volume]
+                        current_candle = data[-1]
+                        
+                        open_price = float(current_candle[1])
+                        close_price = float(current_candle[4])
+                        
+                        if open_price > 0:
+                            candle_change = ((close_price - open_price) / open_price) * 100
+                        else:
+                            candle_change = 0
+                        
+                        return {
+                            'symbol': symbol,
+                            'candle_change': candle_change,
+                            'price': close_price
+                        }
+                    elif data.get('data') and len(data['data']) >= 2:
+                        # Alternative format with data wrapper
                         klines = data['data']
                         current_candle = klines[-1]
                         
-                        open_price = float(current_candle['open'])
-                        close_price = float(current_candle['close'])
+                        if isinstance(current_candle, dict):
+                            open_price = float(current_candle.get('open', 0))
+                            close_price = float(current_candle.get('close', 0))
+                        else:
+                            open_price = float(current_candle[1])
+                            close_price = float(current_candle[4])
                         
                         if open_price > 0:
                             candle_change = ((close_price - open_price) / open_price) * 100
@@ -91,7 +96,7 @@ class MultiCoinMonitor:
                             'price': close_price
                         }
                     else:
-                        logger.error(f"API Error: {data}")
+                        logger.error(f"Unexpected API response format: {data}")
                 else:
                     logger.error(f"HTTP Error: {response.status}")
                         
