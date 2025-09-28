@@ -11,17 +11,18 @@ logger = logging.getLogger(__name__)
 # تنظیمات بات
 BOT_TOKEN = "8454411687:AAGLoczSqO_ptazxaCaBfHiiyL05yMMuCGw"
 CHAT_ID = "1758259682"
+API_KEY = "b948c60da5436f3030a0f502f71fa11b"  # کلید API شما (اختیاری برای عمومی)
 
 class MultiCoinMonitor:
     def __init__(self):
         self.session = None
         self.symbols = [
-            "PORT3_USDT",
-            "KAITO_USDT", 
-            "AEVO_USDT",
-            "COAI_USDT"
+            "PORT3-USDT",  # فرمت Coinbase: با - به جای _
+            "KAITO-USDT", 
+            "AEVO-USDT",
+            "COAI-USDT"
         ]
-        self.threshold = 1.0  # 1% threshold for alerts
+        self.threshold = 2.0  # 2% threshold for alerts
         
     async def init_session(self):
         """شروع session"""
@@ -31,7 +32,10 @@ class MultiCoinMonitor:
         self.session = aiohttp.ClientSession(
             timeout=timeout,
             connector=connector,
-            headers={'User-Agent': 'MultiCoinMonitor/1.0'}
+            headers={
+                'User-Agent': 'MultiCoinMonitor/1.0',
+                'Authorization': f'Bearer {API_KEY}' if API_KEY else None  # اختیاری
+            }
         )
         logger.info("Session started")
     
@@ -42,12 +46,11 @@ class MultiCoinMonitor:
             logger.info("Session closed")
     
     async def get_1min_candle(self, symbol):
-        """گرفتن کندل 1 دقیقه ای"""
+        """گرفتن کندل 1 دقیقه ای از Coinbase"""
         try:
-            url = "https://openapi.bitunix.com/api/spot/v1/market/kline"
+            url = f"https://api.exchange.coinbase.com/products/{symbol}/candles"
             params = {
-                'coin_pair': symbol,
-                'type': '1min',
+                'granularity': 60,  # 1min
                 'limit': 2
             }
             
@@ -56,18 +59,19 @@ class MultiCoinMonitor:
                 if response.status == 200:
                     data = await response.json()
                     
-                    if data.get('code') == 200 and data.get('data') and len(data['data']) >= 2:
-                        klines = data['data']
+                    if isinstance(data, list) and len(data) >= 2:
+                        # Coinbase format: [timestamp, low, high, open, close, volume] - reverse for chronological
+                        klines = sorted(data, key=lambda x: x[0])  # sort by timestamp
                         current_candle = klines[-1]
                         prev_candle = klines[-2]
                         
-                        open_price = float(current_candle['open'])
-                        close_price = float(current_candle['close'])
-                        prev_close = float(prev_candle['close'])
+                        open_price = float(current_candle[3])  # open
+                        close_price = float(current_candle[4])  # close
+                        prev_close = float(prev_candle[4])     # prev close
                         
-                        # محاسبه تغییر کندل
-                        if open_price > 0:
-                            candle_change = ((close_price - open_price) / open_price) * 100
+                        # محاسبه تغییر از prev_close به close فعلی
+                        if prev_close > 0:
+                            candle_change = ((close_price - prev_close) / prev_close) * 100
                         else:
                             candle_change = 0
                         
@@ -126,7 +130,7 @@ class MultiCoinMonitor:
         for symbol in self.symbols:
             candle_data = await self.get_1min_candle(symbol)
             if candle_data:
-                coin_name = symbol.replace('_USDT', '')
+                coin_name = symbol.replace('-USDT', '')
                 change = candle_data['candle_change']
                 
                 if change > 0:
@@ -149,7 +153,7 @@ class MultiCoinMonitor:
         for symbol in self.symbols:
             candle_data = await self.get_1min_candle(symbol)
             if candle_data:
-                coin_name = symbol.replace('_USDT', '')
+                coin_name = symbol.replace('-USDT', '')
                 change = candle_data['candle_change']
                 await self.send_alert(coin_name, change)
             
@@ -162,8 +166,8 @@ class MultiCoinMonitor:
         logger.info("Multi-Coin Monitor started!")
         
         # پیام شروع
-        coin_list = ", ".join([s.replace('_USDT', '') for s in self.symbols])
-        await self.send_telegram(f"🤖 Multi-Coin Monitor started!\n\nCoins: {coin_list}\nThreshold: ±{self.threshold}%\nReports every 5min")
+        coin_list = ", ".join([s.replace('-USDT', '') for s in self.symbols])
+        await self.send_telegram(f"🤖 Multi-Coin Monitor started! (Coinbase API)\n\nCoins: {coin_list}\nThreshold: ±{self.threshold}%\nReports every 5min")
         
         retry_count = 0
         max_retries = 3
@@ -202,6 +206,7 @@ class MultiCoinMonitor:
             logger.error(f"Critical error: {e}")
             await self.send_telegram(f"🚨 Critical Error: {str(e)[:100]}")
         finally:
+            await self.send_telegram("🛑 Multi-Coin Monitor stopped")
             await self.close_session()
             logger.info("Monitor stopped")
 
