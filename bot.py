@@ -14,10 +14,7 @@ class MultiCoinMonitor:
     def __init__(self):
         self.session = None
         self.symbols = [
-            "PORT3_USDT",
-            "KAITO_USDT", 
-            "AEVO_USDT",
-            "COAI_USDT"
+            "KAITO_USDT"
         ]
         self.threshold = 1.0
         
