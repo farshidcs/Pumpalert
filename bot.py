@@ -3,18 +3,23 @@ import aiohttp
 import os
 from datetime import datetime
 import logging
+import hmac
+import hashlib
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = "8454411687:AAGLoczSqO_ptazxaCaBfHiiyL05yMMuCGw"
 CHAT_ID = "1758259682"
+BITUNIX_API_KEY = "b948c60da5436f3030a0f502f71fa11b"
+BITUNIX_SECRET_KEY = "ff27796f41c323d2309234350d50135e"
 
 class MultiCoinMonitor:
     def __init__(self):
         self.session = None
         self.symbols = [
-            "KAITO_USDT"
+            "KAITOUSDT"
         ]
         self.threshold = 1.0
         
@@ -24,7 +29,10 @@ class MultiCoinMonitor:
         self.session = aiohttp.ClientSession(
             timeout=timeout,
             connector=connector,
-            headers={'User-Agent': 'MultiCoinMonitor/1.0'}
+            headers={
+                'User-Agent': 'MultiCoinMonitor/1.0',
+                'X-API-KEY': BITUNIX_API_KEY
+            }
         )
         logger.info("Session started")
     
@@ -35,17 +43,35 @@ class MultiCoinMonitor:
     
     async def get_1min_candle(self, symbol):
         try:
-            url = "https://openapi.bitunix.com/api/spot/v1/market/kline"
+            timestamp = str(int(time.time() * 1000))
             params = {
                 'coin_pair': symbol,
                 'type': '1min',
-                'limit': 2
+                'limit': 2,
+                'timestamp': timestamp
+            }
+            
+            # Create signature
+            query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
+            signature = hmac.new(
+                BITUNIX_SECRET_KEY.encode('utf-8'),
+                query_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            params['signature'] = signature
+            
+            url = "https://openapi.bitunix.com/api/spot/v1/market/kline"
+            headers = {
+                'X-API-KEY': BITUNIX_API_KEY,
+                'Content-Type': 'application/json'
             }
             
             timeout = aiohttp.ClientTimeout(total=10)
-            async with self.session.get(url, params=params, timeout=timeout) as response:
+            async with self.session.get(url, params=params, headers=headers, timeout=timeout) as response:
                 if response.status == 200:
                     data = await response.json()
+                    logger.info(f"API Response: {data}")
                     
                     if data.get('code') == 200 and data.get('data') and len(data['data']) >= 2:
                         klines = data['data']
@@ -64,6 +90,10 @@ class MultiCoinMonitor:
                             'candle_change': candle_change,
                             'price': close_price
                         }
+                    else:
+                        logger.error(f"API Error: {data}")
+                else:
+                    logger.error(f"HTTP Error: {response.status}")
                         
         except Exception as e:
             logger.error(f"Error getting candle for {symbol}: {e}")
