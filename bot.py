@@ -56,21 +56,26 @@ class MultiCoinMonitor:
             params = {
                 'symbol': symbol,
                 'interval': '1m',
-                'limit': 2
+                'limit': 15  # 15 کندل برای محاسبه میانگین
             }
             
             timeout = aiohttp.ClientTimeout(total=10)
             async with self.session.get(url, params=params, timeout=timeout) as response:
                 if response.status == 200:
                     data = await response.json()
-                    logger.info(f"API Response: {data}")
                     
-                    if isinstance(data, list) and len(data) >= 2:
+                    if isinstance(data, list) and len(data) >= 15:
                         # Bitunix futures format: [timestamp, open, high, low, close, volume]
                         current_candle = data[-1]
+                        prev_candles = data[-15:-1]  # 14 کندل قبلی
                         
                         open_price = float(current_candle[1])
                         close_price = float(current_candle[4])
+                        current_volume = float(current_candle[5])
+                        
+                        # محاسبه میانگین volume
+                        avg_volume = sum([float(c[5]) for c in prev_candles]) / len(prev_candles)
+                        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
                         
                         if open_price > 0:
                             candle_change = ((close_price - open_price) / open_price) * 100
@@ -80,19 +85,30 @@ class MultiCoinMonitor:
                         return {
                             'symbol': symbol,
                             'candle_change': candle_change,
-                            'price': close_price
+                            'price': close_price,
+                            'volume': current_volume,
+                            'volume_ratio': volume_ratio
                         }
-                    elif data.get('data') and len(data['data']) >= 2:
+                    elif data.get('data') and len(data['data']) >= 15:
                         # Alternative format with data wrapper
                         klines = data['data']
                         current_candle = klines[-1]
+                        prev_candles = klines[-15:-1]
                         
                         if isinstance(current_candle, dict):
                             open_price = float(current_candle.get('open', 0))
                             close_price = float(current_candle.get('close', 0))
+                            current_volume = float(current_candle.get('volume', 0))
+                            
+                            avg_volume = sum([float(c.get('volume', 0)) for c in prev_candles]) / len(prev_candles)
                         else:
                             open_price = float(current_candle[1])
                             close_price = float(current_candle[4])
+                            current_volume = float(current_candle[5])
+                            
+                            avg_volume = sum([float(c[5]) for c in prev_candles]) / len(prev_candles)
+                        
+                        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
                         
                         if open_price > 0:
                             candle_change = ((close_price - open_price) / open_price) * 100
@@ -102,7 +118,9 @@ class MultiCoinMonitor:
                         return {
                             'symbol': symbol,
                             'candle_change': candle_change,
-                            'price': close_price
+                            'price': close_price,
+                            'volume': current_volume,
+                            'volume_ratio': volume_ratio
                         }
                     else:
                         logger.error(f"Unexpected API response format: {data}")
@@ -129,7 +147,23 @@ class MultiCoinMonitor:
             logger.error(f"Error sending telegram message: {e}")
             return False
     
-    async def send_alert(self, coin_name, change, price=None):
+    async def send_volume_alert(self, coin_name, volume_ratio, price, price_change):
+        """ارسال هشدار Volume spike"""
+        if volume_ratio >= 3.0:  # حجم 3 برابر یا بیشتر
+            emoji = "💥"
+            
+            message = f"""{emoji} <b>VOLUME SPIKE!</b>
+
+{coin_name}: {volume_ratio:.1f}x حجم معمول
+💰 Price: ${price:.6f}
+📊 Change: {price_change:+.2f}%
+🕒 {datetime.now().strftime("%H:%M:%S")}"""
+            
+            success = await self.send_telegram(message)
+            if success:
+                logger.info(f"Volume alert: {coin_name} {volume_ratio:.1f}x")
+    
+    async def send_alert(self, coin_name, change, price=None, volume_ratio=None):
         if change >= self.threshold:
             alert_type = "PUMP"
             emoji = "🚀"
@@ -196,7 +230,6 @@ class MultiCoinMonitor:
         
         retry_count = 0
         max_retries = 3
-        minute_counter = 0
         
         try:
             while True:
@@ -209,8 +242,8 @@ class MultiCoinMonitor:
                         minute_counter = 0
                     
                     retry_count = 0
-                    logger.info(f"Check completed. Next in 1min")
-                    await asyncio.sleep(60)
+                    logger.info(f"Check completed. Next in 30sec")
+                    await asyncio.sleep(30)
                     
                 except Exception as e:
                     retry_count += 1
