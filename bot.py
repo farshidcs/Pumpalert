@@ -19,14 +19,16 @@ class MultiCoinMonitor:
     def __init__(self):
         self.session = None
         self.symbols = [
-            "DOODUSDT",
             "MYXUSDT",
-            "COWUSDT",
-            "INUSDT",
-            "BLESSUSDT",
+            "BANDUSDT",
+            "MITOUSDT",
             "ICNTUSDT",
-            "XPLUSUSDT",
-            "MIRAUSDT"
+            "MIRAUSDT",
+            "AWEUSDT",
+            "PORT3USDT",
+            "MERLUSDT",
+            "1000000MOGUSDT",
+            "ZENUSDT"
         ]
         self.threshold = 1.0
         
