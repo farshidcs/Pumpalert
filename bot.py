@@ -19,7 +19,14 @@ class MultiCoinMonitor:
     def __init__(self):
         self.session = None
         self.symbols = [
-            "KAITOUSDT"
+            "DOODUSDT",
+            "MYXUSDT",
+            "COWUSDT",
+            "INUSDT",
+            "BLESSUSDT",
+            "ICNTUSDT",
+            "XPLUSUSDT",
+            "MIRAUSDT"
         ]
         self.threshold = 1.0
         
@@ -149,7 +156,7 @@ class MultiCoinMonitor:
         for symbol in self.symbols:
             candle_data = await self.get_1min_candle(symbol)
             if candle_data:
-                coin_name = symbol.replace('_USDT', '')
+                coin_name = symbol.replace('USDT', '')
                 change = candle_data['candle_change']
                 price = candle_data.get('price', 0)
                 
@@ -182,7 +189,7 @@ class MultiCoinMonitor:
         await self.init_session()
         logger.info("Multi-Coin Monitor started!")
         
-        coin_list = ", ".join([s.replace('_USDT', '') for s in self.symbols])
+        coin_list = ", ".join([s.replace('USDT', '') for s in self.symbols])
         await self.send_telegram(f"🤖 Multi-Coin Monitor Started!\n\nCoins: {coin_list}\nThreshold: ±{self.threshold}%")
         
         retry_count = 0
