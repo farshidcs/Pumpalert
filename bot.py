@@ -14,34 +14,23 @@ class MultiCoinMonitor:
     def __init__(self):
         self.session = None
         self.symbols = [
-            "XPLUSUSDT", "ASTERUSDT", "SUPERUSDT", "FFUSDT", "LINKUSDT",
-            "ADAUSDT", "MYXUSDT", "HYPEUSDT", "ENAUSDT", "ALPINEUSDT",
-            "AAVEUSDT", "FARTCOINUSDT", "BLESSUSDT", "KAITOUSDT", "STBLUSDT",
-            "ORDERUSDT", "WLDUSDT", "DOTUSDT", "FORMUSDT", "DOODUSDT",
-            "WIFUSDT", "COWUSDT", "HBARUSDT", "ONDOUSDT", "MIRAUSDT",
-            "PENGUUSDT", "0GUSDT", "SNXUSDT", "PUMPFUNUSDT", "AVNTUSDT",
-            "WLFIUSDT", "ZORAUSDT", "YFIUSDT", "CFXUSDT", "PIUSDT",
-            "AEROUSDT", "BRETTUSDT", "BBUSDT", "MEMEUSDT", "TRBUSDT",
-            "PORT3USDT", "QUSDT", "POLUSDT", "WOOUSDT", "PENDLEUSDT",
-            "SANDUSDT", "CROUSDT", "B2USDT", "BOMEUSDT", "DOLUSDT",
-            "MAGICUSDT", "1MBABYDOGEUSDT", "SKATEUSDT", "RAYUSDT", "AI16ZUSDT",
-            "PEOPLEUSDT", "REZUSDT", "STRKUSDT", "VETUSDT", "AXSUSDT",
-            "POPCATUSDT", "TWTUSDT", "DEXEUSDT", "ARUSDT", "FIDAUSDT",
-            "PTBUSDT", "ALCHUSDT", "FLOWUSDT", "TREEUSDT", "BLURUSDT",
-            "THETAUSDT", "SIGNUSDT", "SUNUSDT", "SFPUSDT", "TRADOORUSDT",
-            "FLUIDUSDT", "RUNEUSDT", "SPKUSDT", "MEUSDT", "TSTUSDT",
-            "TUTUSDT", "PROVEUSDT", "MAVUSDT", "OGUSDT", "FUNUSDT",
-            "BEAMXUSDT", "SOLVUSDT", "IDOLUSDT", "PLUMEUSDT", "LRCUSDT",
-            "FLOCKUSDT", "PONKEUSDT", "SUSHIUSDT", "XPINUSDT", "1000000MOGUUSDT",
-            "JTOUSDT", "DOGUSDT", "BUSDT", "MANAUSDT", "MOVEUSDT",
-            "TURBOUSDT", "AIXBTUSDT", "BANDUSDT", "MITOUSDT", "ICNTUSDT",
-            "AWEUSDT", "MERLUSDT", "ZENUSDT"
+            "LINKUSDT",
+            "ADAUSDT",
+            "DOTUSDT",
+            "WIFUSDT",
+            "HBARUSDT",
+            "SNXUSDT",
+            "ONDOUSDT",
+            "POPCATUSDT",
+            "ARUSDT",
+            "MOVEUSDT"
         ]
-        self.threshold = 0.5  # موقتاً برای تست
+        self.threshold = 0.5
         
     async def init_session(self):
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        connector = aiohttp.TCPConnector(limit=20, ttl_dns_cache=300)
+        connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+        
         self.session = aiohttp.ClientSession(
             timeout=timeout,
             connector=connector,
@@ -68,12 +57,9 @@ class MultiCoinMonitor:
                 if response.status == 200:
                     data = await response.json()
                     
-                    # Debug: log first few responses
-                    if symbol in ["LINKUSDT", "ADAUSDT", "DOTUSDT"]:
-                        logger.info(f"API response for {symbol}: {data}")
-                    
                     if isinstance(data, list) and len(data) >= 2:
                         current_candle = data[-1]
+                        
                         open_price = float(current_candle[1])
                         close_price = float(current_candle[4])
                         
@@ -87,12 +73,9 @@ class MultiCoinMonitor:
                             'candle_change': candle_change,
                             'price': close_price
                         }
-                    else:
-                        if symbol == "BTCUSDT":
-                            logger.error(f"Unexpected format: {type(data)}, length: {len(data) if isinstance(data, list) else 'N/A'}")
                         
         except Exception as e:
-            logger.error(f"Error getting candle for {symbol}: {e}")
+            logger.error(f"Error {symbol}: {e}")
         return None
     
     async def send_telegram(self, message):
@@ -103,21 +86,23 @@ class MultiCoinMonitor:
                 'text': message,
                 'parse_mode': 'HTML'
             }
+            
             async with self.session.post(url, json=data) as response:
                 return response.status == 200
+                
         except Exception as e:
-            logger.error(f"Error sending telegram: {e}")
+            logger.error(f"Telegram error: {e}")
             return False
     
     async def send_alert(self, coin_name, change, price):
         if change >= self.threshold:
+            alert_type = "PUMP"
             emoji = "🚀"
             sign = "+"
-            alert_type = "PUMP"
         elif change <= -self.threshold:
+            alert_type = "DUMP"  
             emoji = "📉"
             sign = ""
-            alert_type = "DUMP"
         else:
             return
         
@@ -138,20 +123,16 @@ class MultiCoinMonitor:
                 coin_name = symbol.replace('USDT', '')
                 change = candle_data['candle_change']
                 price = candle_data.get('price')
-                
-                # فقط log کن
-                if abs(change) >= 0.1:  # بیشتر از 0.1% log بزن
-                    logger.info(f"{coin_name}: {change:+.2f}%")
-                
                 await self.send_alert(coin_name, change, price)
             
-            await asyncio.sleep(0.2)  # 200ms بین هر request
+            await asyncio.sleep(0.5)
     
     async def run(self):
         await self.init_session()
         logger.info("Multi-Coin Monitor started!")
         
-        await self.send_telegram(f"🤖 <b>Bot Started!</b>\n\n{len(self.symbols)} coins monitoring\nThreshold: +{self.threshold}%\nCheck: every 30 sec")
+        coin_list = ", ".join([s.replace('USDT', '') for s in self.symbols])
+        await self.send_telegram(f"🤖 Monitor Started!\n\nCoins: {coin_list}\nThreshold: ±{self.threshold}%")
         
         retry_count = 0
         max_retries = 3
@@ -160,6 +141,7 @@ class MultiCoinMonitor:
             while True:
                 try:
                     await self.check_all_coins()
+                    
                     retry_count = 0
                     logger.info(f"Check completed. Next in 30sec")
                     await asyncio.sleep(30)
@@ -169,7 +151,7 @@ class MultiCoinMonitor:
                     logger.error(f"Error {retry_count}/{max_retries}: {e}")
                     
                     if retry_count >= max_retries:
-                        await self.send_telegram("🚨 Bot having issues. Retry in 5min")
+                        await self.send_telegram("🚨 Monitor having issues. Will retry in 5 minutes.")
                         await asyncio.sleep(300)
                         retry_count = 0
                     else:
@@ -182,11 +164,12 @@ class MultiCoinMonitor:
             await self.send_telegram(f"🚨 Critical Error: {str(e)[:100]}")
         finally:
             await self.close_session()
+            logger.info("Monitor stopped")
 
 from aiohttp import web
 
 async def health_handler(request):
-    return web.json_response({"status": "OK"})
+    return web.json_response({"status": "Multi-Coin Monitor OK"})
 
 async def init_bot(app):
     monitor = MultiCoinMonitor()
@@ -207,5 +190,6 @@ def create_app():
 if __name__ == "__main__":
     app = create_app()
     port = int(os.getenv('PORT', 10000))
-    logger.info(f"Starting on port {port}")
+    
+    logger.info(f"Starting Multi-Coin Monitor on port {port}")
     web.run_app(app, host='0.0.0.0', port=port)
