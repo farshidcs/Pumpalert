@@ -68,9 +68,9 @@ class MultiCoinMonitor:
                 if response.status == 200:
                     data = await response.json()
                     
-                    # Debug: log first response
-                    if symbol == "BTCUSDT":
-                        logger.info(f"Sample API response for BTC: {data}")
+                    # Debug: log first few responses
+                    if symbol in ["LINKUSDT", "ADAUSDT", "DOTUSDT"]:
+                        logger.info(f"API response for {symbol}: {data}")
                     
                     if isinstance(data, list) and len(data) >= 2:
                         current_candle = data[-1]
