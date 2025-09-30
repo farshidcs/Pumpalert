@@ -15,7 +15,7 @@ class MultiCoinMonitor:
         self.session = None
         self.symbols = [
             "LINKUSDT",
-            "MOVEUSDT"
+            "ORDERUSDT"
         ]
         self.threshold = 0.5
         
