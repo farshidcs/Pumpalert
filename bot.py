@@ -37,7 +37,7 @@ class MultiCoinMonitor:
             "TURBOUSDT", "AIXBTUSDT", "BANDUSDT", "MITOUSDT", "ICNTUSDT",
             "AWEUSDT", "MERLUSDT", "ZENUSDT"
         ]
-        self.threshold = 2.0
+        self.threshold = 0.5  # موقتاً برای تست
         
     async def init_session(self):
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
@@ -106,10 +106,15 @@ class MultiCoinMonitor:
         if change >= self.threshold:
             emoji = "🚀"
             sign = "+"
+            alert_type = "PUMP"
+        elif change <= -self.threshold:
+            emoji = "📉"
+            sign = ""
+            alert_type = "DUMP"
         else:
             return
         
-        message = f"""{emoji} <b>PUMP</b>
+        message = f"""{emoji} <b>{alert_type}</b>
 
 {coin_name}: {sign}{change:.2f}%
 💰 ${price:.6f}
