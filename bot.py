@@ -68,6 +68,10 @@ class MultiCoinMonitor:
                 if response.status == 200:
                     data = await response.json()
                     
+                    # Debug: log first response
+                    if symbol == "BTCUSDT":
+                        logger.info(f"Sample API response for BTC: {data}")
+                    
                     if isinstance(data, list) and len(data) >= 2:
                         current_candle = data[-1]
                         open_price = float(current_candle[1])
@@ -83,6 +87,9 @@ class MultiCoinMonitor:
                             'candle_change': candle_change,
                             'price': close_price
                         }
+                    else:
+                        if symbol == "BTCUSDT":
+                            logger.error(f"Unexpected format: {type(data)}, length: {len(data) if isinstance(data, list) else 'N/A'}")
                         
         except Exception as e:
             logger.error(f"Error getting candle for {symbol}: {e}")
