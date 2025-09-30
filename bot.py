@@ -125,18 +125,20 @@ class MultiCoinMonitor:
             logger.info(f"Alert: {coin_name} {sign}{change:.2f}%")
     
     async def check_all_coins(self):
-        tasks = []
         for symbol in self.symbols:
-            tasks.append(self.check_coin(symbol))
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
-    async def check_coin(self, symbol):
-        candle_data = await self.get_1min_candle(symbol)
-        if candle_data:
-            coin_name = symbol.replace('USDT', '')
-            change = candle_data['candle_change']
-            price = candle_data.get('price')
-            await self.send_alert(coin_name, change, price)
+            candle_data = await self.get_1min_candle(symbol)
+            if candle_data:
+                coin_name = symbol.replace('USDT', '')
+                change = candle_data['candle_change']
+                price = candle_data.get('price')
+                
+                # فقط log کن
+                if abs(change) >= 0.1:  # بیشتر از 0.1% log بزن
+                    logger.info(f"{coin_name}: {change:+.2f}%")
+                
+                await self.send_alert(coin_name, change, price)
+            
+            await asyncio.sleep(0.2)  # 200ms بین هر request
     
     async def run(self):
         await self.init_session()
